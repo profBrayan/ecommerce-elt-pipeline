@@ -32,6 +32,20 @@ _COLUMNS = [
 ]
 
 
+def normalize_pedido_row(item: dict, partition, run_id: str) -> dict:
+    """`valor_unitario` vem misto na origem (float em alguns registros,
+    "462.99 BRL" em outros) — pyarrow não infere um tipo Arrow único para uma
+    coluna com float e str no mesmo lote. Guardamos como string na raw (fiel
+    à origem) e a limpeza numérica fica na staging, mesmo padrão do
+    preco_tabela sujo de produtos."""
+    row = {col: item.get(col) for col in _COLUMNS}
+    if row["valor_unitario"] is not None:
+        row["valor_unitario"] = str(row["valor_unitario"])
+    row[INGESTION_DATE_FIELD] = partition
+    row[INGESTION_RUN_FIELD] = run_id
+    return row
+
+
 @asset(
     group_name="raw",
     compute_kind="python",
@@ -53,10 +67,7 @@ def raw_pedidos(
         pages_read += 1
         total_records_reported = payload.get("total_records", total_records_reported)
         for item in payload.get("data", []):
-            row = {col: item.get(col) for col in _COLUMNS}
-            row[INGESTION_DATE_FIELD] = partition
-            row[INGESTION_RUN_FIELD] = run_id
-            rows.append(row)
+            rows.append(normalize_pedido_row(item, partition, run_id))
 
     null_counts = {
         col: sum(1 for r in rows if r.get(col) is None) for col in _COLUMNS
