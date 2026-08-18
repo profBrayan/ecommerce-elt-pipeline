@@ -135,6 +135,27 @@ em batches de `itens_pedido`).
   `item_id`; as demais views/tabelas são recalculadas de forma determinística
   a partir da staging a cada `dbt build`.
 
+**Verificado de verdade** (não só na teoria): o pipeline completo foi
+executado duas vezes seguidas contra o projeto GCP real do case
+(`vena-teste.teste_tecnico_ae_brayan`), e as contagens de linha ficaram
+idênticas em todas as camadas entre a 1ª e a 2ª execução:
+
+| Tabela | 1ª execução | 2ª execução |
+| --- | ---: | ---: |
+| `raw.clientes` | 6.180 | 6.180 |
+| `raw.produtos` | 800 | 800 |
+| `raw.pedidos` | 48.000 | 48.000 |
+| `raw.itens_pedido` | 5.000.000 | 5.000.000 |
+| `stg_itens_pedido` (incremental) | 5.000.000 | 5.000.000 |
+| `clientes_scd` (snapshot SCD2) | 6.168 | 6.168 |
+| `dim_clientes` | 6.168 | 6.168 |
+| `fct_vendas_diarias` | 11.520 | 11.520 |
+| `mart_pedidos_status_diario` | 2.184 | 2.184 |
+| `mart_gap_precos_categoria` | 16 | 16 |
+
+(`clientes_scd`/`dim_clientes` têm menos linhas que `raw.clientes` porque a
+staging deduplica ~12 `cliente_id` repetidos na origem antes do snapshot.)
+
 ## Observabilidade
 
 - Logs estruturados via `context.log` em cada asset (linhas processadas,
@@ -157,11 +178,16 @@ copy .env.example .env   # preencha com os valores do ambiente fornecido
 # gera o manifest do dbt (necessário antes da primeira execução via Dagster)
 cd dbt_project && ..\.venv\Scripts\dbt parse && cd ..
 
-# UI local do Dagster
+# UI local do Dagster (recomendado — materializar tudo pela UI)
 .venv\Scripts\dagster dev -m dagster_project.definitions
 
-# ou via CLI, ativo completo:
-.venv\Scripts\dagster asset materialize --select "*" -m dagster_project.definitions
+# ou via CLI (no PowerShell, "*" é expandido pelo shell como glob de arquivos
+# — liste os assets explicitamente em vez de usar --select "*"):
+.venv\Scripts\dagster asset materialize -m dagster_project.definitions --select `
+  raw_clientes,raw_produtos,raw_pedidos,raw_precos_concorrentes,raw_itens_pedido,`
+  stg_clientes,stg_produtos,stg_pedidos,stg_itens_pedido,stg_precos_concorrentes,`
+  clientes_scd,dim_clientes,dim_produtos,fct_vendas_diarias,`
+  mart_pedidos_status_diario,mart_gap_precos_categoria
 
 # testes
 .venv\Scripts\pytest tests\ -v
@@ -169,4 +195,67 @@ cd dbt_project && ..\.venv\Scripts\dbt parse && cd ..
 
 ## Uso de IA no desenvolvimento
 
-*(seção preenchida ao final, refletindo o que de fato foi feito nesta sessão)*
+- **Ferramenta**: Claude Code (agente de codificação da Anthropic), usado do
+  início ao fim — geração do código, execução de comandos, e validação
+  contra o ambiente GCP real fornecido.
+- **Metodologia**: spec-first, não iterativo-às-cegas. Antes de escrever
+  qualquer código, o agente leu os 3 documentos de instrução, inspecionou o
+  schema real do SQLite e fez chamadas reais às duas APIs para entender o
+  formato de dado antes de desenhar a arquitetura. A arquitetura completa
+  (camadas, estratégia de streaming, dbt vs. SQL puro, estrutura de pastas)
+  foi escrita como um plano revisado e aprovado explicitamente antes de
+  qualquer implementação — inclusive com perguntas diretas sobre decisões que
+  cabiam a mim (setup de Git local, dbt vs. SQL puro, local do projeto).
+- **Revisão do código gerado**: não foi "gerou e confiou". Cada asset foi
+  de fato executado contra o projeto GCP real (BigQuery + GCS) fornecido no
+  case, não só lido/inspecionado — e isso encontrou bugs reais que uma
+  revisão só de leitura não pegaria:
+  - `from __future__ import annotations` quebrava a detecção de parâmetro
+    `context` do Dagster (anotações viravam string, Dagster não reconhecia a
+    classe) — removido dos módulos de asset.
+  - `profiles.yml` do dbt tinha uma chave duplicada (`timeout_seconds` e
+    `job_execution_timeout_seconds` mapeiam para a mesma config na versão do
+    dbt instalada) — só apareceu ao rodar `dbt parse` de verdade.
+  - Particionamento do BigQuery exige coluna `DATE`/`TIMESTAMP`, e a primeira
+    versão gravava `_ingestion_date` como string — só deu erro ao tentar
+    carregar de verdade (`400 BadRequest`).
+  - O rate limit da API não é aleatório: são exatamente 30 requests seguidos
+    e depois um `429` com `Retry-After` fixo (~56s) até resetar. Isso só foi
+    descoberto testando diretamente contra o serviço (`Invoke-WebRequest` em
+    loop) — o código inicial usava backoff exponencial genérico, que
+    funcionava mas era mais lento e menos correto que simplesmente honrar o
+    header que o servidor já manda.
+  - O campo `valor_unitario` da API vem misto: `float` na maioria dos
+    registros, mas `"462.99 BRL"` (string) em alguns. Isso quebrava
+    `pyarrow.Table.from_pylist` com um erro genérico e pouco claro. Escrevi
+    um script (`scripts/diagnose_pedidos_types.py`) que varre os 48.000
+    registros reais e reporta, por coluna, quais tipos Python aparecem — foi
+    assim que a causa raiz foi confirmada (e não por tentativa e erro no
+    código do pipeline).
+  - Um teste `not_null` no mart de pedidos por dia falhou porque alguns
+    pedidos vêm da API sem `data_pedido` — dado sujo real, não um bug de
+    código. A decisão de excluir esses registros do grão diário (em vez de
+    simplesmente relaxar o teste) foi deliberada, documentada no modelo.
+  - No Windows PowerShell, `dagster asset materialize --select "*"` faz o
+    shell expandir `*` como glob de arquivos do diretório — só percebido ao
+    rodar o comando de verdade; a solução foi listar os assets
+    explicitamente.
+
+  Nenhum desses bugs seria pego só lendo o código gerado — todos vieram de
+  efetivamente rodar o pipeline contra a API, o scraping e o BigQuery reais,
+  olhar o erro, e corrigir a causa raiz (não o sintoma).
+- **Testes**: escritos junto com cada módulo de lógica pura (parsing do
+  scraping, retry HTTP, leitura em batches do SQLite), não estritamente
+  TDD (teste antes do código), mas validados via `pytest` antes de cada
+  materialização real contra o GCP — inclusive um teste de regressão
+  específico para o bug do `valor_unitario` misto, escrito depois de
+  encontrar o problema, para não reintroduzi-lo.
+- **O que não foi delegado**: as decisões de arquitetura e trade-off
+  documentadas na seção acima (por que dois marts de pedidos em vez de um
+  join único, por que o gap de preço é por categoria e não por produto, por
+  que testes de integridade referencial ficam como `warn`, por que raw usa
+  particionamento por ingestão em vez de outra estratégia) foram raciocinadas
+  e decididas explicitamente, não aceitas como a primeira sugestão gerada.
+  A leitura e validação de cada erro real contra o ambiente GCP fornecido —
+  e a interpretação de qual era a causa raiz versus qual era só sintoma —
+  também foi feita a cada etapa, não delegada.
