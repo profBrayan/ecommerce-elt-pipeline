@@ -1,7 +1,6 @@
 # Secrets & credentials — never committed
 secrets/
 *.json
-!dbt_project/**/*.json
 .env
 *.pem
 *.key
@@ -23,9 +22,11 @@ __pycache__/
 target/
 dbt_packages/
 logs/
+.user.yml
 
 # Dagster
 .dagster_home/
+.tmp_dagster_home*/
 storage/
 
 # OS / editor

@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: dim_clientes
+    description: Versão corrente de cada cliente (SCD2 via snapshot).
+    columns:
+      - name: cliente_id
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_produtos
+    description: Dimensão de produtos.
+    columns:
+      - name: produto_id
+        tests:
+          - unique
+          - not_null
+
+  - name: fct_vendas_diarias
+    description: Fato de vendas agregado por dia x categoria x segmento, a partir de itens_pedido.
+    columns:
+      - name: data
+        tests:
+          - not_null
+      - name: receita_total
+        tests:
+          - not_null
+
+  - name: mart_pedidos_status_diario
+    description: Funil de pedidos da API por dia e status.
+    columns:
+      - name: data
+        tests:
+          - not_null
+
+  - name: mart_gap_precos_categoria
+    description: Comparação de preço médio interno vs. concorrência por categoria.
+    columns:
+      - name: categoria
+        tests:
+          - not_null

@@ -1,0 +1,21 @@
+name: ecommerce_elt
+version: "1.0.0"
+config-version: 2
+
+profile: ecommerce_elt
+
+model-paths: ["models"]
+snapshot-paths: ["snapshots"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+clean-targets:
+  - target
+  - dbt_packages
+
+models:
+  ecommerce_elt:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table

@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: "{{ env_var('BQ_DATASET') }}"
+    tables:
+      - name: clientes
+      - name: produtos
+      - name: pedidos
+      - name: precos_concorrentes
+      - name: itens_pedido

@@ -1,0 +1,68 @@
+version: 2
+
+models:
+  - name: stg_clientes
+    description: Clientes deduplicados e tipados, um registro por cliente_id.
+    columns:
+      - name: cliente_id
+        tests:
+          - unique
+          - not_null
+      - name: email
+
+  - name: stg_produtos
+    description: Produtos deduplicados, preço normalizado para NUMERIC e ativo para BOOLEAN.
+    columns:
+      - name: produto_id
+        tests:
+          - unique
+          - not_null
+      - name: preco_tabela
+        tests:
+          - not_null
+
+  - name: stg_pedidos
+    description: Pedidos da API de vendas, deduplicados por pedido_id.
+    columns:
+      - name: pedido_id
+        tests:
+          - unique
+          - not_null
+      - name: status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["pago", "pendente", "cancelado", "reembolsado"]
+              config:
+                severity: warn
+
+  - name: stg_itens_pedido
+    description: Itens de pedido (grão transacional), 5M+ linhas, modelo incremental.
+    columns:
+      - name: item_id
+        tests:
+          - unique
+          - not_null
+      - name: produto_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_produtos')
+                field: produto_id
+              config:
+                severity: warn
+      - name: cliente_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_clientes')
+                field: cliente_id
+              config:
+                severity: warn
+
+  - name: stg_precos_concorrentes
+    description: Preços de concorrentes normalizados a partir do scraping.
+    columns:
+      - name: preco
+        tests:
+          - not_null
